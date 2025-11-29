@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+pnpm-lock.yaml
+
+# Environment variables (keep .env.example committed)
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Build/Output
+dist/
+build/
+*.tsbuildinfo
+
+# Extracted UI output (regenerated on each run)
+extracted-ui/
+results/
+
+# OS specific
+Thumbs.db
+.DS_Store
+
+# Temporary files
+tmp/
+temp/
+*.tmp
