@@ -184,15 +184,34 @@ async function extractElementsFromUrl(url) {
       const tag = el.tagName.toLowerCase();
       if (!allowed.includes(tag)) return;
 
+      const computedStyles = getComputedStyle(el);
+      const styleObj = {};
+      const props = [
+        "display", "position", "top", "left", "right", "bottom",
+        "width", "height", "margin", "padding",
+        "font-size", "font-weight", "line-height", "color",
+        "background-color", "border", "border-radius", "box-shadow", "text-align"
+      ];
+      props.forEach(prop => {
+        const val = computedStyles.getPropertyValue(prop);
+        if (val && val !== "auto" && val !== "normal") {
+          styleObj[prop] = val;
+        }
+      });
+
       list.push({
-        tag,
-        html: el.outerHTML,
-        classes: el.className,
-        text: el.innerText ?? "",
-        attributes: [...el.attributes].map((a) => ({
-          name: a.name,
-          value: a.value,
-        })),
+        tagName: tag.toUpperCase(),
+        outerHTML: el.outerHTML,
+        className: el.className,
+        innerText: el.innerText ?? "",
+        computedStyles: styleObj,
+        id: el.id || "",
+        name: el.name || "",
+        href: el.href || null,
+        src: el.src || null,
+        placeholder: el.placeholder || null,
+        type: el.type || null,
+        alt: el.alt || null,
       });
     });
 
