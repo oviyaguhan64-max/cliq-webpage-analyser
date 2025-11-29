@@ -3,9 +3,18 @@ import express from "express";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import helmet from "helmet";
-import { chromium } from "playwright";
+import chromiumLib from "@sparticuz/chromium";
+import puppeteerCore from "puppeteer-core";
+import puppeteerFull from "puppeteer";
 
 dotenv.config();
+
+const isRender = process.env.RENDER === "true";
+
+// Use full puppeteer on local dev, puppeteer-core + chromium on Render
+const chromium = isRender ? chromiumLib : null;
+const puppeteer = isRender ? puppeteerCore : puppeteerFull;
+
 
 const PORT = process.env.PORT || 3000;
 const CLIQ_SECRET = process.env.CLIQ_SECRET || "testsecret";
@@ -142,112 +151,58 @@ export function ${className.replace(/-/g, "_")}() {
     }
 
     // ---------- PAGE EXTRACTION ----------
-    async function extractElementsFromUrl(url) {
-      const browser = await chromium.launch({ headless: true });
 
-      // FIXED USER AGENT → Use browser context
-      const context = await browser.newContext({
-        viewport: { width: 1200, height: 800 },
-        userAgent:
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+async function extractElementsFromUrl(url) {
+  let browser;
+
+  if (isRender) {
+    // RENDER (Linux server)
+    const executablePath = await chromium.executablePath();
+
+    browser = await puppeteer.launch({
+      args: chromium.args,
+      executablePath,
+      headless: chromium.headless,
+    });
+
+  } else {
+    // LOCAL WINDOWS DEVELOPMENT
+    browser = await puppeteer.launch({
+      headless: true,
+      defaultViewport: { width: 1280, height: 800 },
+    });
+  }
+
+  const page = await browser.newPage();
+  await page.goto(url, { waitUntil: "networkidle0", timeout: 30000 });
+
+  const raw = await page.evaluate(() => {
+    const allowed = ["button", "input", "label", "a", "select", "textarea"];
+    const list = [];
+
+    document.querySelectorAll("*").forEach((el) => {
+      const tag = el.tagName.toLowerCase();
+      if (!allowed.includes(tag)) return;
+
+      list.push({
+        tag,
+        html: el.outerHTML,
+        classes: el.className,
+        text: el.innerText ?? "",
+        attributes: [...el.attributes].map((a) => ({
+          name: a.name,
+          value: a.value,
+        })),
       });
+    });
 
-      const page = await context.newPage();
+    return list;
+  });
 
-      try {
-        await page.goto(url, { waitUntil: "load", timeout: 20000 });
-      } catch {}
+  await browser.close();
+  return raw;
+}
 
-      // scroll to load lazy elements
-      await page.evaluate(async () => {
-        await new Promise(res => {
-          let total = 0;
-          const step = 300;
-          const interval = setInterval(() => {
-            window.scrollBy(0, step);
-            total += step;
-            if (total >= document.body.scrollHeight) {
-              clearInterval(interval);
-              setTimeout(res, 300);
-            }
-          }, 100);
-        });
-      });
-
-      const elements = await page.evaluate(() => {
-        const selectors = ["button", "input", "label", "a", "img", "select", "textarea"];
-
-        function isVisible(el) {
-          const rect = el.getBoundingClientRect();
-          const cs = getComputedStyle(el);
-          return (
-            rect.width > 0 &&
-            rect.height > 0 &&
-            cs.display !== "none" &&
-            cs.visibility !== "hidden" &&
-            cs.opacity !== "0"
-          );
-        }
-
-        function getStyles(el) {
-          const cs = getComputedStyle(el);
-          const map = {};
-          [
-            "display", "position", "top", "left", "right", "bottom",
-            "width", "height", "margin", "margin-top", "margin-bottom",
-            "margin-left", "margin-right", "padding", "padding-top",
-            "padding-bottom", "padding-left", "padding-right",
-            "font-size", "font-weight", "line-height", "color",
-            "background-color", "border", "border-radius", "box-shadow", "text-align"
-          ].forEach(prop => {
-            const val = cs.getPropertyValue(prop);
-            if (val && val !== "auto" && val !== "0px" && val !== "normal") {
-              map[prop] = val;
-            }
-          });
-          return map;
-        }
-
-        const found = [];
-
-        selectors.forEach(sel => {
-          document.querySelectorAll(sel).forEach(el => {
-            if (!isVisible(el)) return;
-
-            found.push({
-              tagName: el.tagName,
-              outerHTML: el.outerHTML,
-              innerText: el.innerText || "",
-              id: el.id || null,
-              name: el.name || null,
-              type: el.type || null,
-              placeholder: el.placeholder || null,
-              src: el.src || null,
-              href: el.href || null,
-              alt: el.alt || null,
-              "aria-label": el.getAttribute("aria-label"),
-              computedStyles: getStyles(el)
-            });
-          });
-        });
-
-        // Deduplicate by outerHTML signature
-        const seen = new Set();
-        const unique = [];
-        for (const el of found) {
-          const sig = el.outerHTML.slice(0, 200);
-          if (!seen.has(sig)) {
-            seen.add(sig);
-            unique.push(el);
-          }
-        }
-
-        return unique.slice(0, 80);
-      });
-
-      await browser.close();
-      return elements;
-    }
 
     // ---------- API ----------
     app.post("/analyze", async (req, res) => {
