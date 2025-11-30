@@ -10,6 +10,8 @@ import puppeteerFull from "puppeteer";
 import puppeteerExtra from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 
 dotenv.config();
 
@@ -428,6 +430,71 @@ const jobStore = new Map(); // Store job results: jobId -> { status, data, error
 const jobQueue = []; // Queue of pending jobs
 let isProcessing = false;
 
+// Simple on-disk persistence for jobStore to survive restarts
+const DATA_DIR = path.join(process.cwd(), "data");
+const JOBS_FILE = path.join(DATA_DIR, "jobs.json");
+
+function ensureDataDir() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  } catch (e) {
+    console.error('Failed to ensure data dir', DATA_DIR, e);
+  }
+}
+
+function saveJobsToDisk() {
+  try {
+    ensureDataDir();
+    const obj = {};
+    for (const [id, job] of jobStore.entries()) {
+      obj[id] = {
+        status: job.status,
+        url: job.url,
+        data: job.data || null,
+        error: job.error || null,
+        createdAt: job.createdAt ? job.createdAt.toISOString() : null,
+        startedAt: job.startedAt ? job.startedAt.toISOString() : null,
+        finishedAt: job.finishedAt ? job.finishedAt.toISOString() : null,
+        secret: job.secret || null
+      };
+    }
+    fs.writeFileSync(JOBS_FILE, JSON.stringify(obj, null, 2), "utf8");
+  } catch (e) {
+    console.error('Failed to write jobs file', e);
+  }
+}
+
+function loadJobsFromDisk() {
+  try {
+    if (!fs.existsSync(JOBS_FILE)) return;
+    const raw = fs.readFileSync(JOBS_FILE, "utf8");
+    const obj = JSON.parse(raw || "{}");
+    for (const id of Object.keys(obj)) {
+      const j = obj[id];
+      jobStore.set(id, {
+        status: j.status,
+        url: j.url,
+        data: j.data,
+        error: j.error,
+        createdAt: j.createdAt ? new Date(j.createdAt) : new Date(),
+        startedAt: j.startedAt ? new Date(j.startedAt) : undefined,
+        finishedAt: j.finishedAt ? new Date(j.finishedAt) : undefined,
+        secret: j.secret || undefined
+      });
+      // If job was queued or processing, re-enqueue to ensure it gets processed
+      if (j.status === "queued" || j.status === "processing") {
+        jobQueue.push(id);
+      }
+    }
+    if (jobQueue.length > 0) {
+      console.log('Loaded queued jobs from disk:', jobQueue.length);
+      processQueue();
+    }
+  } catch (e) {
+    console.error('Failed to load jobs file', e);
+  }
+}
+
 function generateJobId() {
   return `job-${Date.now()}-${Math.random().toString(36).substring(7)}`;
 }
@@ -449,6 +516,8 @@ function queueJob(jobId, url, secret) {
   } catch (e) {
     console.error('processQueue launch error:', e);
   }
+  // Persist state
+  saveJobsToDisk();
 }
 
 function getJobResult(jobId) {
@@ -505,10 +574,13 @@ async function processQueue() {
         };
         job.status = "done";
         console.log(`processQueue: job ${jobId} done (components=${components.length})`);
+        // Persist updated job state
+        saveJobsToDisk();
       } catch (err) {
         job.status = "failed";
         job.error = err.message || String(err);
         console.error(`processQueue: Job ${jobId} failed:`, err);
+        saveJobsToDisk();
       }
 
       job.finishedAt = new Date();
@@ -537,6 +609,9 @@ app.get('/jobs', (_req, res) => {
   }
   res.json({ ok: true, jobs: out });
 });
+
+// Load persisted jobs if present
+loadJobsFromDisk();
 
 // Clean up old jobs (older than 1 hour)
 setInterval(() => {
