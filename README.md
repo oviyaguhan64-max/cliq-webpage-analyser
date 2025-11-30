@@ -32,7 +32,14 @@ This tool is ideal for:
 - **Components.jsx** - Ready-to-use React JSX code with component snippets
 - **preview.html** - Self-contained HTML preview with inline styles
 
-### 4. **Production-Ready Code**
+### 4. **⚡ Async Job Queue System** (NEW)
+- **Non-blocking API** - Get immediate response with job ID
+- **Background Processing** - Long-running extractions don't timeout
+- **Polling Support** - Check job status anytime with `/result/{jobId}`
+- **Perfect for Render** - Built-in support for serverless deployments
+- See [ASYNC_QUEUE.md](./ASYNC_QUEUE.md) for complete documentation
+
+### 5. **Production-Ready Code**
 - HTML escaping and sanitization
 - CSS property whitelisting (prevents injection)
 - Error handling and detailed logging
@@ -101,7 +108,7 @@ Returns server status:
 {"ok": true}
 ```
 
-### Analyze Webpage
+### Analyze Webpage (Async Queue)
 ```bash
 POST /analyze
 Content-Type: application/json
@@ -111,6 +118,53 @@ x-cliq-signature: your-secret-key
   "url": "https://example.com"
 }
 ```
+
+**Response (Immediate - Non-blocking):**
+```json
+{
+  "ok": true,
+  "status": "queued",
+  "jobId": "job-1701345600000-abc123def",
+  "pollUrl": "/result/job-1701345600000-abc123def",
+  "message": "Job queued for processing. Check /result/{jobId} for status."
+}
+```
+
+### Check Job Status
+```bash
+GET /result/:jobId
+x-cliq-signature: your-secret-key
+```
+
+**Response (While Processing):**
+```json
+{
+  "ok": true,
+  "jobId": "job-1701345600000-abc123def",
+  "status": "processing",
+  "message": "Your job is processing. Check back soon."
+}
+```
+
+**Response (Complete):**
+```json
+{
+  "ok": true,
+  "jobId": "job-1701345600000-abc123def",
+  "status": "done",
+  "summary": {
+    "url": "https://example.com",
+    "componentCount": 15,
+    "components": [ /* ... */ ],
+    "cssFile": "/* ... */",
+    "reactFile": "/* ... */",
+    "completedAt": "2024-11-30T12:34:56.789Z"
+  }
+}
+```
+
+**Why Async?** Component extraction can take 2-10 seconds. The async queue prevents request timeouts on Render and other serverless platforms. See [ASYNC_QUEUE.md](./ASYNC_QUEUE.md) for details.
+
 
 **Response:**
 ```json
@@ -155,13 +209,20 @@ pnpm run extract -- https://example.com
 # - preview.html (visual preview)
 ```
 
-### Method 2: Using cURL
+### Method 2: Using cURL (Async Queue)
 
 ```bash
+# 1. Queue extraction job
 curl -X POST http://localhost:3000/analyze \
   -H "Content-Type: application/json" \
   -H "x-cliq-signature: testsecret" \
   -d '{"url":"https://example.com"}'
+
+# Response: {"ok":true,"status":"queued","jobId":"job-...","pollUrl":"/result/job-..."}
+
+# 2. Poll for results (repeat until status is "done")
+curl http://localhost:3000/result/job-1701345600000-abc123def \
+  -H "x-cliq-signature: testsecret"
 ```
 
 ### Method 3: Using the Test Script
