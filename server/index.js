@@ -25,8 +25,12 @@ const ALLOWED_DOMAINS = (process.env.ALLOWED_DOMAINS || "example.com")
   .map(s => s.trim())
   .filter(Boolean);
 
+console.log("Starting server...");
 const app = express();
+console.log("Express app created");
+
 app.use(helmet());
+console.log("Helmet added");
 
 // Middleware to capture raw body for HMAC signature validation
 app.use(bodyParser.json({
@@ -65,10 +69,28 @@ function validateSecret(req) {
     console.warn("⚠️  No x-cliq-signature header provided");
     return true; // Allow for now to support Zoho Cliq requests
   }
+  // Ensure we have a string or buffer to compute HMAC over.
+  // Some clients (multipart/form-data) may not populate `req.rawBody`.
+  let data = req.rawBody;
+  if (typeof data === "undefined") {
+    // Try to reconstruct from parsed body if available
+    if (req.body == null) {
+      data = "";
+    } else if (typeof req.body === "string") {
+      data = req.body;
+    } else {
+      try {
+        data = JSON.stringify(req.body);
+      } catch (e) {
+        data = "";
+      }
+    }
+  }
 
+  const secret = process.env.CLIQ_SECRET || CLIQ_SECRET || "";
   const expected = crypto
-    .createHmac("sha256", process.env.CLIQ_SECRET)
-    .update(req.rawBody)
+    .createHmac("sha256", secret)
+    .update(typeof data === "string" ? data : String(data))
     .digest("hex");
 
   return signature === expected;
@@ -382,12 +404,18 @@ setInterval(() => {
     // Get job result by ID
     app.get("/result/:jobId", (req, res) => {
       try {
-        if (!validateSecret(req)) {
-          return res.status(401).json({ error: "Invalid x-cliq-signature." });
-        }
-
         const jobId = req.params.jobId;
         const job = getJobResult(jobId);
+
+        // Allow polling with the same signature that queued the job.
+        const signature = (req.headers["x-cliq-signature"] || "").trim();
+        if (signature && job && job.secret && signature === job.secret) {
+          // signature matches stored job secret: allow
+        } else {
+          if (!validateSecret(req)) {
+            return res.status(401).json({ error: "Invalid x-cliq-signature." });
+          }
+        }
 
         if (!job) {
           return res.status(404).json({
@@ -482,6 +510,21 @@ setInterval(() => {
 
     app.get("/health", (_req, res) => res.json({ ok: true }));
 
-    app.listen(PORT, () => {
+    const server = app.listen(PORT, () => {
       console.log("UI Component Rebuilder running on port", PORT);
+    });
+
+    server.on("error", (err) => {
+      console.error("Server error:", err);
+      process.exit(1);
+    });
+
+    process.on("uncaughtException", (err) => {
+      console.error("Uncaught exception:", err);
+      process.exit(1);
+    });
+
+    process.on("unhandledRejection", (reason, promise) => {
+      console.error("Unhandled rejection at:", promise, "reason:", reason);
+      process.exit(1);
     });
