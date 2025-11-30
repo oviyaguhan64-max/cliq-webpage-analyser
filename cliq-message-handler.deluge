@@ -1,25 +1,23 @@
-// Message Handler Code for Zoho Cliq Integration
-// This handler receives URLs and sends them to the CLIQ Webpage Analyser for processing
+// Simple Message Handler for Zoho Cliq
+// Minimal Deluge-compatible implementation
 
 response = Map();
+// Note: Deluge handlers do not always accept inline `function` declarations reliably,
+// so suggestion lists are built inline where needed using Map/List.
 
+// Submit URL for analysis
 if(message.startsWith("http://") || message.startsWith("https://"))
 {
 	try
 	{
-		// Prepare request body
+		info "Processing URL: " + message;
+
 		reqBody = Map();
 		reqBody.put("url", message);
-		
-		// Prepare headers for request
+
 		headers = Map();
 		headers.put("Content-Type", "application/json");
-		
-		info "Sending request to analyser...";
-		info "URL: " + message;
-		
-		// Make POST call to analyser
-		// Note: In Deluge, use body parameter (not parameters) for POST requests
+
 		apiResponse = invokeurl
 		[
 			url: "https://cliq-webpage-analyser.onrender.com/analyze"
@@ -27,85 +25,175 @@ if(message.startsWith("http://") || message.startsWith("https://"))
 			body: reqBody
 			headers: headers
 		];
-		
+
 		info "API Response: " + apiResponse.toString();
-		
-		// Check if job was queued successfully
-		if(apiResponse.get("ok") == true)
+
+		if(apiResponse.get("ok") == true && apiResponse.get("status") == "queued")
 		{
 			jobId = apiResponse.get("jobId");
-			pollUrl = apiResponse.get("pollUrl");
-			
-			response.put("text", 
-				"✅ Job submitted! Your job ID is: `" + jobId + "`\n\n" +
-				"Status: `" + apiResponse.get("status") + "`\n\n" +
-				"I'll poll for results every 2 seconds...\n\n" +
-				"*Extraction in progress...*"
-			);
-			
-			// Optional: Add suggestions for user
-			response.put("suggestions", {
-				"list": {
-					{"text": "Check Status"},
-					{"text": "Cancel"}
-				}
-			});
-			
-			// TODO: Implement polling to check job status
-			// GET /result/{jobId} with x-cliq-signature header
+			response.put("text", "Job submitted. Job ID: " + jobId + " Status: queued");
+			// build suggestions
+			suggList = List();
+			s1 = Map(); s1.put("text", "Check Status: " + jobId);
+			s2 = Map(); s2.put("text", "Cancel Job: " + jobId);
+			suggList.add(s1); suggList.add(s2);
+			suggWrapper = Map(); suggWrapper.put("list", suggList);
+			response.put("suggestions", suggWrapper);
 		}
 		else
 		{
-			errorMsg = apiResponse.get("error");
-			response.put("text", "❌ Error: " + (errorMsg != null ? errorMsg : "Unknown error"));
+			err = apiResponse.get("error");
+			if(err != null) response.put("text", "Error: " + err);
+			else response.put("text", "Error: unknown response from analyzer");
 		}
 	}
 	catch (e)
 	{
-		info "Error processing request";
-		response.put("text", "❌ Error: Request failed");
+		info "Exception: " + e.toString();
+		response.put("text", "Error submitting URL");
 	}
 }
+// Poll status
+else if(message.startsWith("Check Status") || message.startsWith("📊 Check Status") )
+{
+	try
+	{
+		parts = message.split(":");
+		if(parts.size() < 2)
+		{
+			response.put("text", "Provide job id, e.g. Check Status: job-123");
+			return response;
+		}
+		jobId = parts.get(1).trim();
+		headers = Map(); headers.put("Content-Type", "application/json");
+		result = invokeurl
+		[
+			url: "https://cliq-webpage-analyser.onrender.com/result/" + jobId
+			type: GET
+			headers: headers
+		];
+
+		status = result.get("status");
+		if(status == "queued" || status == "processing")
+		{
+			qpos = result.get("queuePosition");
+			msg = "Job " + jobId + " status: " + status;
+			if(qpos != null) msg = msg + " (position: " + qpos + ")";
+			response.put("text", msg);
+			suggList = List();
+			s1 = Map(); s1.put("text", "Check Status: " + jobId);
+			s2 = Map(); s2.put("text", "Cancel Job: " + jobId);
+			suggList.add(s1); suggList.add(s2);
+			suggWrapper = Map(); suggWrapper.put("list", suggList);
+			response.put("suggestions", suggWrapper);
+		}
+		else if(status == "failed")
+		{
+			err = result.get("error");
+			response.put("text", "Job " + jobId + " failed: " + (err != null ? err : "unknown"));
+			suggList = List();
+			s1 = Map(); s1.put("text", "Check Status: " + jobId);
+			suggList.add(s1);
+			suggWrapper = Map(); suggWrapper.put("list", suggList);
+			response.put("suggestions", suggWrapper);
+		}
+		else if(status == "done")
+		{
+			summary = result.get("summary");
+			cnt = (summary != null && summary.get("componentCount") != null) ? summary.get("componentCount") : "unknown";
+			response.put("text", "Job " + jobId + " done. Components: " + cnt);
+			// preview url
+			previewUrl = result.get("previewUrl");
+			if(previewUrl == null)
+			{
+				actions = result.get("actions");
+				if(actions != null && actions.size() > 0)
+				{
+					first = actions.get(0);
+					if(first.get("type") == "preview") previewUrl = first.get("url");
+				}
+			}
+			if(previewUrl != null && !previewUrl.startsWith("http")) previewUrl = "https://cliq-webpage-analyser.onrender.com" + previewUrl;
+			if(previewUrl != null) response.put("previewUrl", previewUrl);
+
+			suggList = List();
+			s1 = Map(); s1.put("text", "Preview: " + jobId);
+			suggList.add(s1);
+			suggWrapper = Map(); suggWrapper.put("list", suggList);
+			response.put("suggestions", suggWrapper);
+		}
+		else
+		{
+			response.put("text", "Unexpected status: " + status);
+		}
+	}
+	catch (e)
+	{
+		info "Error checking status: " + e.toString();
+		response.put("text", "Error checking status");
+	}
+}
+// Preview command
+else if(message.startsWith("Preview") || message.startsWith("🔍 Preview"))
+{
+	try
+	{
+		parts = message.split(":");
+		if(parts.size() < 2)
+		{
+			response.put("text", "Provide job id, e.g. Preview: job-123");
+			return response;
+		}
+		jobId = parts.get(1).trim();
+		headers = Map(); headers.put("Content-Type", "application/json");
+		result = invokeurl
+		[
+			url: "https://cliq-webpage-analyser.onrender.com/result/" + jobId
+			type: GET
+			headers: headers
+		];
+		previewUrl = result.get("previewUrl");
+		if(previewUrl == null)
+		{
+			actions = result.get("actions");
+			if(actions != null && actions.size() > 0)
+			{
+				first = actions.get(0);
+				if(first.get("type") == "preview") previewUrl = first.get("url");
+			}
+		}
+		if(previewUrl != null && !previewUrl.startsWith("http")) previewUrl = "https://cliq-webpage-analyser.onrender.com" + previewUrl;
+		if(previewUrl != null) response.put("text", "Preview: " + previewUrl);
+		else response.put("text", "Preview not available");
+	}
+	catch (e)
+	{
+		info "Preview error: " + e.toString();
+		response.put("text", "Error fetching preview");
+	}
+}
+// Greetings
 else if(message.containsIgnoreCase("HI") || message.containsIgnoreCase("HEY"))
 {
-	text = "Hi! How you doing'? :wink:";
-	response.put("suggestions", {
-		"list": {
-			{"text": "I am great!"},
-			{"text": "Meh!"}
-		}
-	});
-	response.put("text", text);
+	response.put("text", "Hi! Send me a URL to analyze or ask for Status.");
+	suggList = List();
+	t1 = Map(); t1.put("text", "I am great!");
+	t2 = Map(); t2.put("text", "Meh!");
+	suggList.add(t1); suggList.add(t2);
+	suggWrapper = Map(); suggWrapper.put("list", suggList);
+	response.put("suggestions", suggWrapper);
 }
 else if(message.equals("I am great!"))
 {
-	text = "Glad to hear that! :smile:";
-	response.put("text", text);
+	response.put("text", "Nice! Send me a URL to analyze.");
 }
 else if(message.equals("Meh!"))
 {
-	text = "Oops! Don't you worry. Your day is definitely going to get better. :grinning:";
-	response.put("text", text);
-}
-else if(message.containsIgnoreCase("ticket"))
-{
-	text = "Welcome to the Zylker Ticket Booking Portal! I'll need a few details to book the ticket.";
-	context = {
-		"id": "personal_details",
-		"timeout": "300",
-		"params": {
-			{"name": "name", "question": "Please enter your name."},
-			{"name": "age", "question": "How old are you? :smile:"},
-			{"name": "sex", "question": "Gender:", "suggestions": {"list": {{"text": "Male"}, {"text": "Female"}}}}
-		}
-	};
-	response.put("context", context);
-	response.put("text", text);
+	response.put("text", "Hope things get better. Send a URL when ready.");
 }
 else
 {
-	text = "Messaging me for the first time? Come say a Hi ! :grinning:";
-	response.put("text", text);
+	response.put("text", "Send a URL (http/https) to start analysis.");
 }
 
 return response;
