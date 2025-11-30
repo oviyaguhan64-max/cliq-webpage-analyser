@@ -222,6 +222,90 @@ async function extractElementsFromUrl(url) {
   return raw;
 }
 
+// ---------- JOB QUEUE SYSTEM ----------
+const jobStore = new Map(); // Store job results: jobId -> { status, data, error, createdAt }
+const jobQueue = []; // Queue of pending jobs
+let isProcessing = false;
+
+function generateJobId() {
+  return `job-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+}
+
+function queueJob(jobId, url, secret) {
+  jobStore.set(jobId, {
+    status: "queued",
+    url,
+    data: null,
+    error: null,
+    createdAt: new Date(),
+    secret
+  });
+  jobQueue.push(jobId);
+  processQueue(); // Start processing
+}
+
+function getJobResult(jobId) {
+  return jobStore.get(jobId) || null;
+}
+
+async function processQueue() {
+  if (isProcessing || jobQueue.length === 0) return;
+  isProcessing = true;
+
+  try {
+    while (jobQueue.length > 0) {
+      const jobId = jobQueue.shift();
+      const job = jobStore.get(jobId);
+
+      if (!job) continue;
+
+      // Update status
+      job.status = "processing";
+      job.startedAt = new Date();
+
+      try {
+        // Validate job
+        if (!job.url) throw new Error("Missing URL");
+        if (!isAllowedUrl(job.url)) throw new Error("URL not allowed");
+
+        // Extract components
+        const raw = await extractElementsFromUrl(job.url);
+        const components = raw.map((el, idx) => buildComponentResult(el, idx));
+
+        const cssFile = components.map(c => c.css).join("\n\n");
+        const reactFile = components.map(c => c.reactSnippet).join("\n\n");
+
+        job.data = {
+          url: job.url,
+          componentCount: components.length,
+          components,
+          cssFile,
+          reactFile,
+          completedAt: new Date()
+        };
+        job.status = "done";
+      } catch (err) {
+        job.status = "failed";
+        job.error = err.message;
+        console.error(`Job ${jobId} failed:`, err);
+      }
+
+      job.finishedAt = new Date();
+    }
+  } finally {
+    isProcessing = false;
+  }
+}
+
+// Clean up old jobs (older than 1 hour)
+setInterval(() => {
+  const oneHourAgo = Date.now() - 60 * 60 * 1000;
+  for (const [jobId, job] of jobStore.entries()) {
+    if (job.createdAt.getTime() < oneHourAgo) {
+      jobStore.delete(jobId);
+    }
+  }
+}, 5 * 60 * 1000); // Run every 5 minutes
 
     // ---------- API ----------
     app.post("/analyze", async (req, res) => {
@@ -238,24 +322,70 @@ async function extractElementsFromUrl(url) {
           return res.status(403).json({ error: "URL not allowed." });
         }
 
-        const raw = await extractElementsFromUrl(finalUrl);
+        // Queue the job for async processing
+        const jobId = generateJobId();
+        const secret = req.headers["x-cliq-signature"];
+        queueJob(jobId, finalUrl, secret);
 
-        const components = raw.map((el, idx) => buildComponentResult(el, idx));
-
-        const cssFile = components.map(c => c.css).join("\n\n");
-        const reactFile = components.map(c => c.reactSnippet).join("\n\n");
-
-        const summary = {
-          url: finalUrl,
-          componentCount: components.length,
-          components,
-          cssFile,
-          reactFile
-        };
-
-        return res.json({ ok: true, summary });
+        // Respond immediately with job ID
+        return res.json({
+          ok: true,
+          status: "queued",
+          jobId,
+          pollUrl: `/result/${jobId}`,
+          message: "Job queued for processing. Check /result/{jobId} for status."
+        });
       } catch (err) {
-        console.error("Analyze error:", err);
+        console.error("Queue error:", err);
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    // Get job result by ID
+    app.get("/result/:jobId", (req, res) => {
+      try {
+        if (!validateSecret(req)) {
+          return res.status(401).json({ error: "Invalid x-cliq-signature." });
+        }
+
+        const jobId = req.params.jobId;
+        const job = getJobResult(jobId);
+
+        if (!job) {
+          return res.status(404).json({
+            ok: false,
+            error: "Job not found. Job IDs are stored for 1 hour."
+          });
+        }
+
+        if (job.status === "processing" || job.status === "queued") {
+          return res.json({
+            ok: true,
+            jobId,
+            status: job.status,
+            queuePosition: jobQueue.indexOf(jobId) + 1,
+            message: `Your job is ${job.status}. Check back soon.`
+          });
+        }
+
+        if (job.status === "failed") {
+          return res.status(400).json({
+            ok: false,
+            jobId,
+            status: "failed",
+            error: job.error
+          });
+        }
+
+        // Status === "done"
+        return res.json({
+          ok: true,
+          jobId,
+          status: "done",
+          summary: job.data
+        });
+      } catch (err) {
+        console.error("Result fetch error:", err);
         return res.status(500).json({ error: err.message });
       }
     });
