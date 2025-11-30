@@ -442,7 +442,13 @@ function queueJob(jobId, url, secret) {
     secret
   });
   jobQueue.push(jobId);
-  processQueue(); // Start processing
+  console.log(`Queued job ${jobId} for ${url}. Queue length: ${jobQueue.length}`);
+  // Kick off worker (no await) — ensures async processing starts
+  try {
+    processQueue(); // Start processing
+  } catch (e) {
+    console.error('processQueue launch error:', e);
+  }
 }
 
 function getJobResult(jobId) {
@@ -450,19 +456,32 @@ function getJobResult(jobId) {
 }
 
 async function processQueue() {
-  if (isProcessing || jobQueue.length === 0) return;
+  if (isProcessing) {
+    console.log('processQueue: worker already running; exiting');
+    return;
+  }
+  if (jobQueue.length === 0) {
+    console.log('processQueue: no jobs to process');
+    return;
+  }
+
   isProcessing = true;
+  console.log('processQueue: starting worker loop, jobs=', jobQueue.length);
 
   try {
     while (jobQueue.length > 0) {
       const jobId = jobQueue.shift();
       const job = jobStore.get(jobId);
 
-      if (!job) continue;
+      if (!job) {
+        console.warn('processQueue: job not found in store for id', jobId);
+        continue;
+      }
 
       // Update status
       job.status = "processing";
       job.startedAt = new Date();
+      console.log(`processQueue: processing ${jobId} (url=${job.url})`);
 
       try {
         // Validate job
@@ -485,18 +504,39 @@ async function processQueue() {
           completedAt: new Date()
         };
         job.status = "done";
+        console.log(`processQueue: job ${jobId} done (components=${components.length})`);
       } catch (err) {
         job.status = "failed";
-        job.error = err.message;
-        console.error(`Job ${jobId} failed:`, err);
+        job.error = err.message || String(err);
+        console.error(`processQueue: Job ${jobId} failed:`, err);
       }
 
       job.finishedAt = new Date();
     }
+  } catch (loopErr) {
+    console.error('processQueue: worker loop crashed:', loopErr);
   } finally {
     isProcessing = false;
+    console.log('processQueue: worker exiting, remaining jobs=', jobQueue.length);
   }
 }
+
+// Admin/debug endpoint — list jobs (for debugging only)
+app.get('/jobs', (_req, res) => {
+  const out = {};
+  for (const [id, job] of jobStore.entries()) {
+    out[id] = {
+      status: job.status,
+      url: job.url,
+      createdAt: job.createdAt,
+      startedAt: job.startedAt || null,
+      finishedAt: job.finishedAt || null,
+      error: job.error || null,
+      componentCount: job.data ? job.data.componentCount : null
+    };
+  }
+  res.json({ ok: true, jobs: out });
+});
 
 // Clean up old jobs (older than 1 hour)
 setInterval(() => {
