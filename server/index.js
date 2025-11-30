@@ -331,11 +331,16 @@ setInterval(() => {
     // ---------- API ----------
     app.post("/analyze", async (req, res) => {
       try {
+        console.log("📨 POST /analyze received");
+        console.log("Body:", req.body);
+        console.log("RawBody:", req.rawBody);
+        
         if (!validateSecret(req)) {
           return res.status(401).json({ error: "Invalid x-cliq-signature." });
         }
 
         const url = (req.body.url || "").trim();
+        console.log("Extracted URL:", url);
         if (!url) return res.status(400).json({ error: "Missing URL." });
 
         let finalUrl = url.startsWith("http") ? url : `https://${url}`;
