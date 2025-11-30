@@ -36,6 +36,15 @@ app.use(bodyParser.json({
   }
 }));
 
+// Also parse URL-encoded form data (for Zoho Cliq compatibility)
+app.use(bodyParser.urlencoded({ 
+  limit: "300kb",
+  extended: true,
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString("utf8");
+  }
+}));
+
 // ---------- SECURITY HELPERS ----------
 function isAllowedUrl(urlStr) {
   try {
@@ -332,14 +341,17 @@ setInterval(() => {
     app.post("/analyze", async (req, res) => {
       try {
         console.log("📨 POST /analyze received");
+        console.log("Content-Type:", req.headers["content-type"]);
         console.log("Body:", req.body);
-        console.log("RawBody:", req.rawBody);
+        console.log("RawBody:", req.rawBody?.substring(0, 100));
         
         if (!validateSecret(req)) {
           return res.status(401).json({ error: "Invalid x-cliq-signature." });
         }
 
-        const url = (req.body.url || "").trim();
+        // Handle both JSON body (req.body.url) and form data (req.body.url)
+        let url = (req.body.url || "").trim();
+        
         console.log("Extracted URL:", url);
         if (!url) return res.status(400).json({ error: "Missing URL." });
 
