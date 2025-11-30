@@ -58,14 +58,108 @@ app.use(bodyParser.urlencoded({
   }
 }));
 
+// Handler for /analyze logic extracted so it can be invoked from the
+// normal route and from the body-parse recovery path.
+async function handleAnalyze(req, res) {
+  try {
+    console.log("📨 POST /analyze received");
+    console.log("Content-Type:", req.headers["content-type"]);
+    console.log("Body:", req.body);
+    console.log("RawBody:", req.rawBody?.substring(0, 100));
+    
+    if (!validateSecret(req)) {
+      return res.status(401).json({ error: "Invalid x-cliq-signature." });
+    }
+
+    // Handle both JSON body (req.body.url) and form data (req.body.url)
+    let url = (req.body.url || "").trim();
+    
+    console.log("Extracted URL:", url);
+    if (!url) return res.status(400).json({ error: "Missing URL." });
+
+    let finalUrl = url.startsWith("http") ? url : `https://${url}`;
+    if (!isAllowedUrl(finalUrl)) {
+      return res.status(403).json({ error: "URL not allowed." });
+    }
+
+    // Queue the job for async processing
+    const jobId = generateJobId();
+    const secret = req.headers["x-cliq-signature"];
+    queueJob(jobId, finalUrl, secret);
+
+    // Respond immediately with job ID
+    return res.json({
+      ok: true,
+      status: "queued",
+      jobId,
+      pollUrl: `/result/${jobId}`,
+      message: "Job queued for processing. Check /result/{jobId} for status."
+    });
+  } catch (err) {
+    console.error("Queue error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+}
+
 // Error handler for body parsing errors (invalid JSON / malformed bodies)
-app.use((err, req, res, next) => {
+app.use(async (err, req, res, next) => {
   if (!err) return next();
   // body-parser sets err.type === 'entity.parse.failed' on JSON parse errors
   if (err.type === 'entity.parse.failed' || (err instanceof SyntaxError && err.status === 400 && 'body' in err)) {
     console.error('Body parse error:', err.message || err);
     console.error('Content-Type:', req.headers['content-type']);
     console.error('RawBody (first 300 chars):', (req.rawBody || '').substring(0, 300));
+
+    // Special-case: if this was a POST to /analyze and the raw body looks like multipart
+    // (starts with a boundary), try to recover by parsing the multipart body manually
+    // and invoking the analyze handler. This handles clients that send multipart
+    // payloads but incorrectly set Content-Type to application/json.
+    try {
+      if (req.method === 'POST' && req.path === '/analyze') {
+        const raw = req.rawBody || '';
+        if (raw.trim().startsWith('--')) {
+          // Extract boundary token from the first line
+          const m = raw.match(/^--([A-Za-z0-9-_]+)/);
+          const boundary = m ? m[1] : null;
+          if (boundary) {
+            // Simple multipart parsing: split parts by boundary marker
+            const parts = raw.split(new RegExp("--" + boundary + "(?:\\r\\n|\\n)"));
+            const fields = {};
+            for (const part of parts) {
+              // Each part contains headers, blank line, then body
+              const idx = part.indexOf('\r\n\r\n');
+              const idxn = part.indexOf('\n\n');
+              const splitIdx = idx !== -1 ? idx : idxn;
+              if (splitIdx === -1) continue;
+              const hdr = part.slice(0, splitIdx);
+              const body = part.slice(splitIdx + (idx !== -1 ? 4 : 2)).trim();
+              const nameMatch = hdr.match(/name="([^"]+)"/);
+              if (nameMatch) {
+                const name = nameMatch[1];
+                fields[name] = body.replace(/\r?\n$/, '');
+              }
+            }
+
+            if (fields.url) {
+              // Attach parsed body and call analyze handler
+              req.body = { url: fields.url };
+              console.log('Recovered multipart body for /analyze, url=', fields.url);
+              // Call analyze handler directly
+              try {
+                await handleAnalyze(req, res);
+              } catch (hErr) {
+                console.error('Recovered analyze handler error:', hErr);
+                return res.status(500).json({ error: hErr.message || String(hErr) });
+              }
+              return; // response already sent by handler
+            }
+          }
+        }
+      }
+    } catch (recoverErr) {
+      console.error('Error while attempting to recover multipart body:', recoverErr);
+    }
+
     return res.status(400).json({ error: 'Invalid request body' });
   }
   // Pass other errors along
@@ -415,46 +509,8 @@ setInterval(() => {
 }, 5 * 60 * 1000); // Run every 5 minutes
 
     // ---------- API ----------
-    app.post("/analyze", multipart.none(), async (req, res) => {
-      try {
-        console.log("📨 POST /analyze received");
-        console.log("Content-Type:", req.headers["content-type"]);
-        console.log("Body:", req.body);
-        console.log("RawBody:", req.rawBody?.substring(0, 100));
-        
-        if (!validateSecret(req)) {
-          return res.status(401).json({ error: "Invalid x-cliq-signature." });
-        }
-
-        // Handle both JSON body (req.body.url) and form data (req.body.url)
-        let url = (req.body.url || "").trim();
-        
-        console.log("Extracted URL:", url);
-        if (!url) return res.status(400).json({ error: "Missing URL." });
-
-        let finalUrl = url.startsWith("http") ? url : `https://${url}`;
-        if (!isAllowedUrl(finalUrl)) {
-          return res.status(403).json({ error: "URL not allowed." });
-        }
-
-        // Queue the job for async processing
-        const jobId = generateJobId();
-        const secret = req.headers["x-cliq-signature"];
-        queueJob(jobId, finalUrl, secret);
-
-        // Respond immediately with job ID
-        return res.json({
-          ok: true,
-          status: "queued",
-          jobId,
-          pollUrl: `/result/${jobId}`,
-          message: "Job queued for processing. Check /result/{jobId} for status."
-        });
-      } catch (err) {
-        console.error("Queue error:", err);
-        return res.status(500).json({ error: err.message });
-      }
-    });
+    // Use the shared handler so recovery code can call the same logic
+    app.post("/analyze", multipart.none(), handleAnalyze);
 
     // Get job result by ID
     app.get("/result/:jobId", (req, res) => {
