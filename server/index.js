@@ -28,22 +28,37 @@ const ALLOWED_DOMAINS = (process.env.ALLOWED_DOMAINS || "example.com")
 const app = express();
 app.use(helmet());
 
-// Middleware to capture raw body for HMAC signature validation
-app.use(bodyParser.json({
-  limit: "300kb",
-  verify: (req, res, buf) => {
-    req.rawBody = buf.toString("utf8");
-  }
-}));
-
-// Also parse URL-encoded form data (for Zoho Cliq compatibility)
-app.use(bodyParser.urlencoded({ 
-  limit: "300kb",
-  extended: true,
-  verify: (req, res, buf) => {
-    req.rawBody = buf.toString("utf8");
-  }
-}));
+// Custom middleware to handle all body types
+app.use((req, res, next) => {
+  let data = '';
+  
+  req.on('data', chunk => {
+    data += chunk.toString();
+  });
+  
+  req.on('end', () => {
+    req.rawBody = data;
+    
+    // Try to parse as JSON
+    try {
+      req.body = JSON.parse(data);
+    } catch {
+      // Try to parse as URL-encoded form data
+      try {
+        req.body = {};
+        const params = new URLSearchParams(data);
+        for (const [key, value] of params) {
+          req.body[key] = value;
+        }
+      } catch {
+        // Couldn't parse, leave body empty
+        req.body = {};
+      }
+    }
+    
+    next();
+  });
+});
 
 // ---------- SECURITY HELPERS ----------
 function isAllowedUrl(urlStr) {
