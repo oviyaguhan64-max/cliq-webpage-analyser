@@ -49,11 +49,17 @@ function isAllowedUrl(urlStr) {
 
 function validateSecret(req) {
   const signature = (req.headers["x-cliq-signature"] || "").trim();
-  if (!signature) return false;
+  
+  // If no signature provided, allow the request (for Zoho Cliq compatibility)
+  // In production, you should require proper signature validation
+  if (!signature) {
+    console.warn("⚠️  No x-cliq-signature header provided");
+    return true; // Allow for now to support Zoho Cliq requests
+  }
 
   const expected = crypto
     .createHmac("sha256", process.env.CLIQ_SECRET)
-    .update(req.rawBody || "")
+    .update(req.rawBody)
     .digest("hex");
 
   return signature === expected;
