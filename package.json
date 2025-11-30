@@ -5,7 +5,9 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "nodemon server/index.js",
-    "extract": "node extract-and-test.js"
+    "extract": "node extract-and-test.js",
+    "test": "node test-e2e.mjs",
+    "test:async": "node test-async-queue.mjs"
   },
   "dependencies": {
     "@sparticuz/chromium": "^141.0.0",
