@@ -650,32 +650,42 @@ setInterval(() => {
           });
         }
 
+        // Common response skeleton
+        const base = {
+          ok: true,
+          jobId,
+          status: job.status
+        };
+
         if (job.status === "processing" || job.status === "queued") {
-          return res.json({
-            ok: true,
-            jobId,
-            status: job.status,
-            queuePosition: jobQueue.indexOf(jobId) + 1,
-            message: `Your job is ${job.status}. Check back soon.`
-          });
+          base.queuePosition = jobQueue.indexOf(jobId) + 1;
+          // Client UI: while queued/processing show actions to poll or cancel
+          base.actions = [
+            { type: "check_status", label: "Check Status" },
+            { type: "cancel", label: "Cancel Job" }
+          ];
+          base.message = `Your job is ${job.status}. Check back soon.`;
+          return res.json(base);
         }
 
         if (job.status === "failed") {
-          return res.status(400).json({
-            ok: false,
-            jobId,
-            status: "failed",
-            error: job.error
-          });
+          base.ok = false;
+          base.error = job.error;
+          base.actions = [
+            { type: "retry", label: "Retry" }
+          ];
+          return res.status(400).json(base);
         }
 
         // Status === "done"
-        return res.json({
-          ok: true,
-          jobId,
-          status: "done",
-          summary: job.data
-        });
+        // Provide a preview URL (by jobId) so clients can open the generated preview.
+        const previewUrl = `/preview?jobId=${encodeURIComponent(jobId)}`;
+        base.summary = job.data;
+        base.actions = [
+          { type: "preview", label: "Preview", url: previewUrl }
+        ];
+        base.previewUrl = previewUrl;
+        return res.json(base);
       } catch (err) {
         console.error("Result fetch error:", err);
         return res.status(500).json({ error: err.message });
@@ -683,16 +693,27 @@ setInterval(() => {
     });
 
     // Simple one-request preview endpoint — returns a single HTML document
+    // Supports either a `url` query parameter OR `jobId` for completed jobs.
     app.get("/preview", async (req, res) => {
       try {
-        if (!validateSecret(req)) {
-          return res.status(401).send("Unauthorized - missing x-cliq-signature");
+        // If a jobId is provided, and that job is done, use its URL (no signature required)
+        const jobId = (req.query.jobId || "").toString().trim();
+        let finalUrl = null;
+
+        if (jobId) {
+          const job = getJobResult(jobId);
+          if (!job) return res.status(404).send("Job not found.");
+          if (job.status !== 'done') return res.status(400).send("Job not completed yet.");
+          finalUrl = job.url;
+        } else {
+          if (!validateSecret(req)) {
+            return res.status(401).send("Unauthorized - missing x-cliq-signature");
+          }
+          const url = (req.query.url || "").toString().trim();
+          if (!url) return res.status(400).send("Missing url query parameter.");
+          finalUrl = url.startsWith("http") ? url : `https://${url}`;
         }
 
-        const url = (req.query.url || "").toString().trim();
-        if (!url) return res.status(400).send("Missing url query parameter.");
-
-        let finalUrl = url.startsWith("http") ? url : `https://${url}`;
         if (!isAllowedUrl(finalUrl)) return res.status(403).send("URL not allowed.");
 
         const raw = await extractElementsFromUrl(finalUrl);
