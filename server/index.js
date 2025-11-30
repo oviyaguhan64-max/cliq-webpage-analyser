@@ -4,6 +4,7 @@ import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import helmet from "helmet";
 import chromiumLib from "@sparticuz/chromium";
+import multer from "multer";
 import puppeteerCore from "puppeteer-core";
 import puppeteerFull from "puppeteer";
 import crypto from "crypto";
@@ -30,6 +31,7 @@ const app = express();
 console.log("Express app created");
 
 app.use(helmet());
+const multipart = multer();
 console.log("Helmet added");
 
 // Middleware to capture raw body for HMAC signature validation
@@ -360,7 +362,7 @@ setInterval(() => {
 }, 5 * 60 * 1000); // Run every 5 minutes
 
     // ---------- API ----------
-    app.post("/analyze", async (req, res) => {
+    app.post("/analyze", multipart.none(), async (req, res) => {
       try {
         console.log("📨 POST /analyze received");
         console.log("Content-Type:", req.headers["content-type"]);
