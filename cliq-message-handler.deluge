@@ -11,32 +11,20 @@ if(message.startsWith("http://") || message.startsWith("https://"))
 		reqBody = Map();
 		reqBody.put("url", message);
 		
-		// Convert to JSON string for signature calculation
-		jsonBody = reqBody.toString(); // This creates JSON string
-		
-		// Get HMAC secret from environment or hardcode (better: use Zoho Vault)
-		// IMPORTANT: Keep this secret secure - use Zoho Vault in production!
-		hmacSecret = "1001.3ea9d992cfa4a3e0db5f5c83fb5a7710.b2631f1a4a9275a484f44c14afbf88e5";
-		
-		// Generate HMAC SHA256 signature
-		// In Deluge, use the encodeHMAC() function
-		signature = encodeHMAC(jsonBody, hmacSecret, "SHA256");
-		
-		// Prepare headers with signature
+		// Prepare headers for request
 		headers = Map();
 		headers.put("Content-Type", "application/json");
-		headers.put("x-cliq-signature", signature);
 		
 		info "Sending request to analyser...";
 		info "URL: " + message;
-		info "Signature: " + signature.substring(0, 20) + "...";
 		
-		// Make POST call with signature header
+		// Make POST call to analyser
+		// Note: In Deluge, use body parameter (not parameters) for POST requests
 		apiResponse = invokeurl
 		[
 			url: "https://cliq-webpage-analyser.onrender.com/analyze"
 			type: POST
-			parameters: reqBody
+			body: reqBody
 			headers: headers
 		];
 		
@@ -74,8 +62,8 @@ if(message.startsWith("http://") || message.startsWith("https://"))
 	}
 	catch (e)
 	{
-		info "Error processing request: " + e.getMessage();
-		response.put("text", "❌ Error: " + e.getMessage());
+		info "Error processing request";
+		response.put("text", "❌ Error: Request failed");
 	}
 }
 else if(message.containsIgnoreCase("HI") || message.containsIgnoreCase("HEY"))

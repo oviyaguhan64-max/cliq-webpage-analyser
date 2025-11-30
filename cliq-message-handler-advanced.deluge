@@ -2,69 +2,6 @@
 // Handles URL submissions and polls for extraction results
 
 response = Map();
-
-// Helper function to generate HMAC signature
-function generateSignature(body, secret)
-{
-	return encodeHMAC(body, secret, "SHA256");
-}
-
-// Helper function to poll job results
-function pollJobResult(jobId, secret, maxRetries = 30)
-{
-	baseUrl = "https://cliq-webpage-analyser.onrender.com";
-	
-	for(i = 0; i < maxRetries; i++)
-	{
-		try
-		{
-			// Generate signature for GET request
-			// For GET requests with no body, sign empty string
-			signature = generateSignature("", secret);
-			
-			headers = Map();
-			headers.put("x-cliq-signature", signature);
-			
-			// Poll for result
-			result = invokeurl
-			[
-				url: baseUrl + "/result/" + jobId
-				type: GET
-				headers: headers
-			];
-			
-			status = result.get("status");
-			info "Poll #" + (i + 1) + " - Status: " + status;
-			
-			if(status == "done")
-			{
-				return result.get("summary");
-			}
-			else if(status == "failed")
-			{
-				return null; // Job failed
-			}
-			
-			// Wait before next poll (exponential backoff)
-			delay = (i + 1) * 500; // 500ms, 1s, 1.5s, etc.
-			if(delay > 5000)
-			{
-				delay = 5000; // Cap at 5 seconds
-			}
-			
-			// Deluge sleep (in milliseconds)
-			// Note: Use task scheduling instead for production
-		}
-		catch (e)
-		{
-			info "Poll error: " + e.getMessage();
-		}
-	}
-	
-	return null; // Timeout after max retries
-}
-
-// Main handler logic
 if(message.startsWith("http://") || message.startsWith("https://"))
 {
 	try
@@ -74,25 +11,17 @@ if(message.startsWith("http://") || message.startsWith("https://"))
 		// Step 1: Prepare request
 		reqBody = Map();
 		reqBody.put("url", message);
-		jsonBody = reqBody.toString();
 		
-		// Get secret (use Zoho Vault in production)
-		hmacSecret = "1001.3ea9d992cfa4a3e0db5f5c83fb5a7710.b2631f1a4a9275a484f44c14afbf88e5";
-		
-		// Step 2: Generate signature
-		signature = generateSignature(jsonBody, hmacSecret);
-		info "Generated signature: " + signature.substring(0, 20) + "...";
-		
-		// Step 3: Send request with signature
+		// Step 2: Send request to analyser
+		// Note: In Deluge, use body parameter (not parameters) for POST requests
 		headers = Map();
 		headers.put("Content-Type", "application/json");
-		headers.put("x-cliq-signature", signature);
 		
 		apiResponse = invokeurl
 		[
 			url: "https://cliq-webpage-analyser.onrender.com/analyze"
 			type: POST
-			parameters: reqBody
+			body: reqBody
 			headers: headers
 		];
 		
@@ -124,71 +53,22 @@ if(message.startsWith("http://") || message.startsWith("https://"))
 		else
 		{
 			errorMsg = apiResponse.get("error");
-			response.put("text", "❌ Error: " + (errorMsg != null ? errorMsg : "Unknown error"));
-			info "Request failed: " + errorMsg;
+			if(errorMsg != null)
+			{
+				response.put("text", "❌ Error: " + errorMsg);
+				info "Request failed: " + errorMsg;
+			}
+			else
+			{
+				response.put("text", "❌ Error: Unknown error");
+				info "Request failed: Unknown error";
+			}
 		}
 	}
 	catch (e)
 	{
-		info "Exception caught: " + e.getMessage();
-		response.put("text", "❌ Error processing request: " + e.getMessage());
-	}
-}
-else if(message.containsIgnoreCase("status") && context != null && context.containsKey("jobId"))
-{
-	// Check status of existing job
-	try
-	{
-		jobId = context.get("jobId");
-		hmacSecret = "1001.3ea9d992cfa4a3e0db5f5c83fb5a7710.b2631f1a4a9275a484f44c14afbf88e5";
-		
-		signature = generateSignature("", hmacSecret);
-		
-		headers = Map();
-		headers.put("x-cliq-signature", signature);
-		
-		result = invokeurl
-		[
-			url: "https://cliq-webpage-analyser.onrender.com/result/" + jobId
-			type: GET
-			headers: headers
-		];
-		
-		status = result.get("status");
-		
-		if(status == "done")
-		{
-			summary = result.get("summary");
-			components = summary.get("components");
-			componentCount = summary.get("componentCount");
-			
-			response.put("text",
-				"✅ *Extraction Complete!*\n\n" +
-				"*Components Found:* " + componentCount + "\n" +
-				"*URL:* " + summary.get("url") + "\n\n" +
-				"*Output Files:*\n" +
-				"• `components.json` - Component metadata\n" +
-				"• `styles.css` - CSS rules\n" +
-				"• `Components.jsx` - React code\n" +
-				"• `preview.html` - HTML preview"
-			);
-		}
-		else if(status == "processing")
-		{
-			response.put("text", "⏳ Still processing... Please wait!");
-		}
-		else if(status == "failed")
-		{
-			response.put("text", "❌ Job failed: " + result.get("error"));
-		}
-		else
-		{
-			response.put("text", "📋 Status: " + status);
-		}
-	}
-	catch (e)
-	{
-		response.put("text", "❌ Error checking status: " + e.getMessage());
+		info "Exception caught";
+		response.put("text", "❌ Error processing request");
 	}
 }
 else if(message.containsIgnoreCase("HI") || message.containsIgnoreCase("HEY"))
