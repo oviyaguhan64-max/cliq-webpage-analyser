@@ -6,6 +6,7 @@ import helmet from "helmet";
 import chromiumLib from "@sparticuz/chromium";
 import puppeteerCore from "puppeteer-core";
 import puppeteerFull from "puppeteer";
+import crypto from "crypto";
 
 dotenv.config();
 
@@ -26,7 +27,14 @@ const ALLOWED_DOMAINS = (process.env.ALLOWED_DOMAINS || "example.com")
 
 const app = express();
 app.use(helmet());
-app.use(bodyParser.json({ limit: "300kb" }));
+
+// Middleware to capture raw body for HMAC signature validation
+app.use(bodyParser.json({
+  limit: "300kb",
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString("utf8");
+  }
+}));
 
 // ---------- SECURITY HELPERS ----------
 function isAllowedUrl(urlStr) {
@@ -40,8 +48,15 @@ function isAllowedUrl(urlStr) {
 }
 
 function validateSecret(req) {
-  const token = (req.headers["x-cliq-signature"] || "").trim();
-  return token === CLIQ_SECRET;
+  const signature = (req.headers["x-cliq-signature"] || "").trim();
+  if (!signature) return false;
+
+  const expected = crypto
+    .createHmac("sha256", process.env.CLIQ_SECRET)
+    .update(req.rawBody || "")
+    .digest("hex");
+
+  return signature === expected;
 }
 
 // ---------- CSS HELPERS ----------
