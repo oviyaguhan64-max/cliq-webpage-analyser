@@ -28,36 +28,31 @@ const ALLOWED_DOMAINS = (process.env.ALLOWED_DOMAINS || "example.com")
 const app = express();
 app.use(helmet());
 
-// Custom middleware to handle all body types
-app.use((req, res, next) => {
-  let data = '';
-  
-  req.on('data', chunk => {
-    data += chunk.toString();
-  });
-  
-  req.on('end', () => {
-    req.rawBody = data;
-    
-    // Try to parse as JSON
-    try {
-      req.body = JSON.parse(data);
-    } catch {
-      // Try to parse as URL-encoded form data
-      try {
-        req.body = {};
-        const params = new URLSearchParams(data);
-        for (const [key, value] of params) {
-          req.body[key] = value;
-        }
-      } catch {
-        // Couldn't parse, leave body empty
-        req.body = {};
-      }
-    }
-    
-    next();
-  });
+// Use body-parser with custom error handling
+app.use(bodyParser.json({
+  limit: "300kb",
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString("utf8");
+  }
+}));
+
+app.use(bodyParser.urlencoded({
+  limit: "300kb",
+  extended: true,
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString("utf8");
+  }
+}));
+
+// Error handler for body parsing errors
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && 'body' in err) {
+    console.warn("⚠️  Body parse error, attempting fallback parsing");
+    req.body = {};
+    req.rawBody = '';
+    return next();
+  }
+  next(err);
 });
 
 // ---------- SECURITY HELPERS ----------
