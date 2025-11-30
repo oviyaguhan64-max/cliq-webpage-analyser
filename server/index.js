@@ -7,6 +7,8 @@ import chromiumLib from "@sparticuz/chromium";
 import multer from "multer";
 import puppeteerCore from "puppeteer-core";
 import puppeteerFull from "puppeteer";
+import puppeteerExtra from "puppeteer-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import crypto from "crypto";
 
 dotenv.config();
@@ -15,7 +17,12 @@ const isRender = process.env.RENDER === "true";
 
 // Use full puppeteer on local dev, puppeteer-core + chromium on Render
 const chromium = isRender ? chromiumLib : null;
+// Use puppeteer-extra with stealth plugin to improve compatibility with
+// sites that try to block headless browsers. For Render use puppeteer-core,
+// for local development use full puppeteer.
+puppeteerExtra.use(StealthPlugin());
 const puppeteer = isRender ? puppeteerCore : puppeteerFull;
+const puppeteerDriver = puppeteerExtra;
 
 
 const PORT = process.env.PORT || 3000;
@@ -51,6 +58,20 @@ app.use(bodyParser.urlencoded({
   }
 }));
 
+// Error handler for body parsing errors (invalid JSON / malformed bodies)
+app.use((err, req, res, next) => {
+  if (!err) return next();
+  // body-parser sets err.type === 'entity.parse.failed' on JSON parse errors
+  if (err.type === 'entity.parse.failed' || (err instanceof SyntaxError && err.status === 400 && 'body' in err)) {
+    console.error('Body parse error:', err.message || err);
+    console.error('Content-Type:', req.headers['content-type']);
+    console.error('RawBody (first 300 chars):', (req.rawBody || '').substring(0, 300));
+    return res.status(400).json({ error: 'Invalid request body' });
+  }
+  // Pass other errors along
+  return next(err);
+});
+
 // ---------- SECURITY HELPERS ----------
 function isAllowedUrl(urlStr) {
   try {
@@ -71,10 +92,18 @@ function validateSecret(req) {
     console.warn("⚠️  No x-cliq-signature header provided");
     return true; // Allow for now to support Zoho Cliq requests
   }
+  // If STRICT_HMAC enabled, require rawBody to be present (exact bytes)
+  const STRICT = (process.env.STRICT_HMAC || "false") === "true";
+
   // Ensure we have a string or buffer to compute HMAC over.
   // Some clients (multipart/form-data) may not populate `req.rawBody`.
   let data = req.rawBody;
   if (typeof data === "undefined") {
+    if (STRICT) {
+      // In strict mode, missing rawBody cannot be validated
+      console.warn("STRICT_HMAC enabled but req.rawBody is undefined");
+      return false;
+    }
     // Try to reconstruct from parsed body if available
     if (req.body == null) {
       data = "";
@@ -213,22 +242,46 @@ async function extractElementsFromUrl(url) {
     // RENDER (Linux server)
     const executablePath = await chromium.executablePath();
 
-    browser = await puppeteer.launch({
-      args: chromium.args,
+    browser = await puppeteerDriver.launch({
+      puppeteer: puppeteerCore,
+      args: (chromium.args || []).concat(["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]),
       executablePath,
       headless: chromium.headless,
     });
 
   } else {
     // LOCAL WINDOWS DEVELOPMENT
-    browser = await puppeteer.launch({
+    browser = await puppeteerDriver.launch({
+      puppeteer: puppeteerFull,
       headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
       defaultViewport: { width: 1280, height: 800 },
     });
   }
 
   const page = await browser.newPage();
-  await page.goto(url, { waitUntil: "networkidle0", timeout: 30000 });
+  // Improve compatibility with sites that block headless browsers by
+  // using a common desktop user-agent and standard headers. Increase
+  // navigation timeout to allow slower pages to load.
+  try {
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    );
+    await page.setExtraHTTPHeaders({
+      "Accept-Language": "en-US,en;q=0.9",
+    });
+
+    await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
+  } catch (navErr) {
+    console.warn("Navigation warning/failed for", url, "->", navErr.message || navErr);
+    // Attempt a second try with a more permissive waitUntil to recover
+    try {
+      await page.goto(url, { waitUntil: "load", timeout: 60000 });
+    } catch (err) {
+      await browser.close();
+      throw new Error(`Failed to load page: ${err.message || String(err)}`);
+    }
+  }
 
   const raw = await page.evaluate(() => {
     const allowed = ["button", "input", "label", "a", "select", "textarea"];
