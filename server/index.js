@@ -28,7 +28,7 @@ const ALLOWED_DOMAINS = (process.env.ALLOWED_DOMAINS || "example.com")
 const app = express();
 app.use(helmet());
 
-// Use body-parser with custom error handling
+// Middleware to capture raw body for HMAC signature validation
 app.use(bodyParser.json({
   limit: "300kb",
   verify: (req, res, buf) => {
@@ -36,24 +36,14 @@ app.use(bodyParser.json({
   }
 }));
 
-app.use(bodyParser.urlencoded({
+// Also parse URL-encoded form data (for Zoho Cliq compatibility)
+app.use(bodyParser.urlencoded({ 
   limit: "300kb",
   extended: true,
   verify: (req, res, buf) => {
     req.rawBody = buf.toString("utf8");
   }
 }));
-
-// Error handler for body parsing errors
-app.use((err, req, res, next) => {
-  if (err instanceof SyntaxError && 'body' in err) {
-    console.warn("⚠️  Body parse error, attempting fallback parsing");
-    req.body = {};
-    req.rawBody = '';
-    return next();
-  }
-  next(err);
-});
 
 // ---------- SECURITY HELPERS ----------
 function isAllowedUrl(urlStr) {
